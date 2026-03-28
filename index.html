@@ -31,7 +31,7 @@
 <script type="text/babel">
 const { useState, useEffect, useRef, useMemo } = React;
 
-// ── Local storage ─────────────────────────────────────────────────────────────
+// ── Storage ───────────────────────────────────────────────────────────────────
 const STORE_KEY = "fieldiq_v2";
 const JBIN_API  = "fieldiq_jbin_key";
 const JBIN_BIN  = "fieldiq_jbin_bin";
@@ -40,45 +40,48 @@ const save    = d  => localStorage.setItem(STORE_KEY, JSON.stringify(d));
 const uid     = () => Math.random().toString(36).slice(2,9);
 const defState= () => ({ players:[], gameInfo:{ team:"", gameNumber:"", date:"", type:"" }, plays:[] });
 
-// ── JSONBin API ───────────────────────────────────────────────────────────────
+// Yard range scores: short=1, medium=2, long=3
+const YARD_RANGES = [
+  { value:"short",  label:"Short",  sub:"0-5 yds",   score:1 },
+  { value:"medium", label:"Medium", sub:"6-20 yds",  score:2 },
+  { value:"long",   label:"Long",   sub:"21-50 yds", score:3 },
+];
+const yardScore = range => YARD_RANGES.find(r=>r.value===range)?.score || 0;
+
+// Play result config
+const RESULTS = [
+  { value:"caught",        label:"🙌 Caught",       color:"#22c55e", needsQb:true,  needsYards:false, needsTD:false },
+  { value:"missed",        label:"❌ Missed",        color:"#ef4444", needsQb:true,  needsYards:false, needsTD:false },
+  { value:"flag",          label:"🚩 Flag Pull",     color:"#f59e0b", needsQb:false, needsYards:false, needsTD:false },
+  { value:"reception",     label:"🏈 Reception",     color:"#a855f7", needsQb:true,  needsYards:true,  needsTD:true  },
+  { value:"interception",  label:"🛡 Interception",  color:"#3b82f6", needsQb:true,  needsYards:true,  needsTD:true  },
+];
+const resultCfg = v => RESULTS.find(r=>r.value===v) || {};
+
+// ── JSONBin ───────────────────────────────────────────────────────────────────
 const jbCreate = async (key, body) => {
-  const r = await fetch("https://api.jsonbin.io/v3/b", {
-    method:"POST",
-    headers:{ "Content-Type":"application/json", "X-Master-Key":key, "X-Bin-Private":"false" },
-    body: JSON.stringify(body)
-  });
+  const r = await fetch("https://api.jsonbin.io/v3/b", { method:"POST", headers:{"Content-Type":"application/json","X-Master-Key":key,"X-Bin-Private":"false"}, body:JSON.stringify(body) });
   if (!r.ok) throw new Error(r.status);
   return (await r.json()).metadata.id;
 };
 const jbUpdate = async (key, id, body) => {
-  const r = await fetch(`https://api.jsonbin.io/v3/b/${id}`, {
-    method:"PUT",
-    headers:{ "Content-Type":"application/json", "X-Master-Key":key },
-    body: JSON.stringify(body)
-  });
+  const r = await fetch(`https://api.jsonbin.io/v3/b/${id}`, { method:"PUT", headers:{"Content-Type":"application/json","X-Master-Key":key}, body:JSON.stringify(body) });
   if (!r.ok) throw new Error(r.status);
 };
-const jbRead = async (id) => {
+const jbRead = async id => {
   const r = await fetch(`https://api.jsonbin.io/v3/b/${id}/latest`);
   if (!r.ok) throw new Error(r.status);
   return (await r.json()).record;
 };
 
-// ── Snapshot encode/decode (legacy one-time share) ────────────────────────────
-const encSnap = (stats, gi) => {
-  const o = { g:gi, p:stats.map(p=>({ n:p.name,num:p.number,pos:p.positions,c:p.caught.length,m:p.missed.length,f:p.flag.length,s:p.score,isQb:p.isQb,comp:p.comp.length,inc:p.inc.length,thrown:p.thrown.length,compPct:p.compPct })), ts:Date.now() };
-  try { return btoa(encodeURIComponent(JSON.stringify(o))); } catch { return null; }
-};
-const decSnap = s => { try { return JSON.parse(decodeURIComponent(atob(s))); } catch { return null; } };
-
-// Convert live-stats array to ReadOnlyView snap format
+// ── Snapshot helpers ──────────────────────────────────────────────────────────
 const statsToSnap = (stats, gi, updatedAt) => ({
   g: gi,
-  p: stats.map(p=>({ n:p.name, num:p.number, pos:p.positions, c:p.caught.length, m:p.missed.length, f:p.flag.length, s:p.score, isQb:p.isQb, comp:p.comp.length, inc:p.inc.length, thrown:p.thrown.length, compPct:p.compPct })),
+  p: stats.map(p=>({ n:p.name, num:p.number, pos:p.positions, c:p.caught.length, m:p.missed.length, f:p.flag.length, s:p.score, isQb:p.isQb, comp:p.comp.length, inc:p.inc.length, thrown:p.thrown.length, compPct:p.compPct, receptions:p.receptions.length, tds:p.tds, interceptions:p.interceptions.length, totalYards:p.totalYardScore, avgYards:p.avgYards })),
   ts: updatedAt ? new Date(updatedAt).getTime() : Date.now()
 });
 
-// ── QR code ───────────────────────────────────────────────────────────────────
+// ── QR Code ───────────────────────────────────────────────────────────────────
 function QRCode({ url }) {
   return (
     <div style={{display:"flex",justifyContent:"center",margin:"8px 0 16px"}}>
@@ -89,11 +92,12 @@ function QRCode({ url }) {
   );
 }
 
-// ── Read-only player stats view ───────────────────────────────────────────────
+// ── Read-only view ────────────────────────────────────────────────────────────
 function ROView({ snap }) {
   const { g, p:pl, ts } = snap;
   const maxC = Math.max(1,...pl.map(p=>p.c));
   const maxF = Math.max(1,...pl.map(p=>p.f));
+  const maxY = Math.max(1,...pl.map(p=>p.avgYards||0));
   const ranked = [...pl].sort((a,b)=>b.s-a.s);
   const updAt  = ts ? new Date(ts).toLocaleString([],{month:"short",day:"numeric",hour:"2-digit",minute:"2-digit"}) : "";
   const Bar = ({label,pct,color,sub}) => (
@@ -127,41 +131,45 @@ function ROView({ snap }) {
       </div>
       <div style={{padding:"1rem"}}>
         <div style={{fontSize:"0.7rem",color:"#888",letterSpacing:2,textTransform:"uppercase",marginBottom:10}}>🏆 Player Rankings</div>
-        <div style={{fontSize:"0.65rem",color:"#445",marginBottom:14}}>Score = catches×2 + flag pulls</div>
+        <div style={{fontSize:"0.65rem",color:"#445",marginBottom:14}}>Score = catches×2 + flag pulls + receptions×2 + TDs×3</div>
         {ranked.map((p,i)=>{
-          const cp=Math.round(p.c/maxC*100), fp=Math.round(p.f/maxF*100), cr=(p.c+p.m)>0?Math.round(p.c/(p.c+p.m)*100):0;
+          const cp=Math.round(p.c/maxC*100), fp=Math.round(p.f/maxF*100), yp=maxY>0?Math.round((p.avgYards||0)/maxY*100):0;
+          const cr=(p.c+p.m)>0?Math.round(p.c/(p.c+p.m)*100):0;
           const rc=i===0?"#ffd700":i===1?"#c0c0c0":i===2?"#cd7f32":"#334";
           return (
             <div key={i} style={{background:i===0?"linear-gradient(135deg,#112030,#0e1a2a)":"#111d29",borderRadius:13,marginBottom:7,border:i===0?"1px solid #00e5ff28":"1px solid #1a2636",padding:"0.75rem"}}>
-              <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:12}}>
+              <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:10}}>
                 <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:"1.2rem",color:rc,minWidth:18,textAlign:"center"}}>{i+1}</div>
                 <div style={{background:"#00e5ff18",color:"#00e5ff",fontFamily:"'Bebas Neue',sans-serif",fontSize:"0.95rem",borderRadius:6,width:30,height:30,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>{p.num}</div>
                 <div style={{flex:1}}>
                   <div style={{fontWeight:700,fontSize:"0.875rem"}}>{p.n}</div>
                   <div style={{display:"flex",gap:3,marginTop:2}}>{p.pos.map(pos=><span key={pos} style={{background:pos==="quarterback"?"#ff6b3522":"#00e5ff22",color:pos==="quarterback"?"#ff6b35":"#00e5ff",border:`1px solid ${pos==="quarterback"?"#ff6b3555":"#00e5ff55"}`,borderRadius:4,padding:"1px 6px",fontSize:"0.6rem",fontWeight:700,textTransform:"uppercase"}}>{pos==="quarterback"?"QB":"PL"}</span>)}</div>
                 </div>
-                <div style={{display:"flex",gap:6,alignItems:"center",flexShrink:0}}>
-                  <span style={{fontSize:"0.8rem",color:"#22c55e",fontWeight:700}}>{p.c}C</span>
+                <div style={{display:"flex",gap:5,alignItems:"center",flexShrink:0,flexWrap:"wrap",justifyContent:"flex-end"}}>
+                  <span style={{fontSize:"0.75rem",color:"#22c55e",fontWeight:700}}>{p.c}C</span>
                   <span style={{fontSize:"0.65rem",color:"#334"}}>·</span>
-                  <span style={{fontSize:"0.8rem",color:"#f59e0b",fontWeight:700}}>{p.f}F</span>
-                  {p.isQb&&p.thrown>0&&<><span style={{fontSize:"0.65rem",color:"#334"}}>·</span><span style={{fontSize:"0.8rem",color:"#ff6b35",fontWeight:700}}>{p.compPct}%</span></>}
+                  <span style={{fontSize:"0.75rem",color:"#f59e0b",fontWeight:700}}>{p.f}F</span>
+                  {p.tds>0&&<><span style={{fontSize:"0.65rem",color:"#334"}}>·</span><span style={{fontSize:"0.75rem",color:"#ffd700",fontWeight:700}}>{p.tds}TD</span></>}
+                  {p.interceptions>0&&<><span style={{fontSize:"0.65rem",color:"#334"}}>·</span><span style={{fontSize:"0.75rem",color:"#3b82f6",fontWeight:700}}>{p.interceptions}INT</span></>}
                 </div>
                 <div style={{textAlign:"right",flexShrink:0}}>
                   <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:"1.6rem",color:"#00e5ff",lineHeight:1}}>{p.s}</div>
                   <div style={{fontSize:"0.5rem",color:"#445",textTransform:"uppercase"}}>IQ</div>
                 </div>
               </div>
-              <div style={{display:"flex",gap:6,marginBottom:10}}>
-                {[{v:p.c,l:"Catches",col:"#22c55e"},{v:p.m,l:"Missed",col:"#ef4444"},{v:p.f,l:"Flag Pulls",col:"#f59e0b"}].map(s=>(
-                  <div key={s.l} style={{flex:1,background:"#0a1420",borderRadius:8,padding:"8px 4px",textAlign:"center",border:`1px solid ${s.col}33`}}>
-                    <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:"1.4rem",color:s.col,lineHeight:1}}>{s.v}</div>
-                    <div style={{fontSize:"0.55rem",color:"#667",textTransform:"uppercase",letterSpacing:.8,marginTop:1}}>{s.l}</div>
+              <div style={{display:"flex",gap:6,marginBottom:10,flexWrap:"wrap"}}>
+                {[{v:p.c,l:"Catches",col:"#22c55e"},{v:p.m,l:"Missed",col:"#ef4444"},{v:p.f,l:"Flag Pulls",col:"#f59e0b"},{v:p.receptions,l:"Receptions",col:"#a855f7"},{v:p.tds,l:"TDs",col:"#ffd700"},{v:p.interceptions,l:"INTs",col:"#3b82f6"}].map(s=>(
+                  <div key={s.l} style={{flex:"1 1 30%",background:"#0a1420",borderRadius:8,padding:"7px 4px",textAlign:"center",border:`1px solid ${s.col}33`,minWidth:50}}>
+                    <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:"1.3rem",color:s.col,lineHeight:1}}>{s.v}</div>
+                    <div style={{fontSize:"0.5rem",color:"#667",textTransform:"uppercase",letterSpacing:.8,marginTop:1}}>{s.l}</div>
                   </div>
                 ))}
               </div>
+              {p.avgYards>0&&<div style={{background:"#0a1420",borderRadius:8,padding:"8px 12px",marginBottom:10,display:"flex",justifyContent:"space-between",alignItems:"center"}}><span style={{fontSize:"0.7rem",color:"#888",textTransform:"uppercase",letterSpacing:.8}}>Avg Yard Score</span><span style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:"1.4rem",color:"#a855f7",lineHeight:1}}>{p.avgYards}</span></div>}
               <div style={{background:"#0a1420",borderRadius:9,padding:"10px 10px 4px"}}>
                 <Bar label="Catches vs Best" pct={cp} color="#22c55e" sub={`${p.c} · ${cp}%`}/>
                 <Bar label="Flag Pulls vs Best" pct={fp} color="#f59e0b" sub={`${p.f} · ${fp}%`}/>
+                {maxY>0&&<Bar label="Avg Yard Score vs Best" pct={yp} color="#a855f7" sub={p.avgYards>0?`${p.avgYards} avg score`:"No yard plays"}/>}
                 {p.isQb&&<Bar label="Pass Completion %" pct={p.compPct} color="#ff6b35" sub={p.thrown>0?`${p.comp}/${p.thrown} · ${p.compPct}%`:"No attempts"}/>}
                 {(p.c+p.m)>0&&<Bar label="Catch Rate" pct={cr} color="#00e5ff" sub={`${cr}%`}/>}
               </div>
@@ -190,56 +198,55 @@ function ROView({ snap }) {
   );
 }
 
-// ── Live team loader (parents view via ?team=binId) ───────────────────────────
+// ── Live team loader (parents) ────────────────────────────────────────────────
 function LiveView({ binId }) {
-  const [snap, setSnap] = useState(null);
-  const [err,  setErr]  = useState(false);
-  useEffect(()=>{ jbRead(binId).then(d=>setSnap(statsToSnap(d.stats, d.gameInfo, d.updatedAt))).catch(()=>setErr(true)); },[]);
-  if (err) return (
-    <div style={{fontFamily:"'DM Sans',sans-serif",background:"#080f17",minHeight:"100vh",color:"#fff",display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column",gap:12,padding:20}}>
-      <div style={{fontSize:"2.5rem"}}>😕</div>
-      <div style={{fontWeight:700}}>Couldn't load team stats</div>
-      <div style={{fontSize:"0.8rem",color:"#888",textAlign:"center"}}>The link may be invalid or stats haven't been published yet.</div>
-    </div>
-  );
-  if (!snap) return (
-    <div style={{fontFamily:"'DM Sans',sans-serif",background:"#080f17",minHeight:"100vh",color:"#fff",display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column",gap:12}}>
-      <div style={{fontSize:"1.5rem",animation:"fadeIn .5s ease infinite alternate"}}>⏳</div>
-      <div style={{fontSize:"0.875rem",color:"#888"}}>Loading team stats…</div>
-    </div>
-  );
+  const [snap,setSnap]=useState(null); const [err,setErr]=useState(false);
+  useEffect(()=>{ jbRead(binId).then(d=>setSnap(statsToSnap(d.stats,d.gameInfo,d.updatedAt))).catch(()=>setErr(true)); },[]);
+  if(err) return <div style={{fontFamily:"'DM Sans',sans-serif",background:"#080f17",minHeight:"100vh",color:"#fff",display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column",gap:12,padding:20}}><div style={{fontSize:"2.5rem"}}>😕</div><div style={{fontWeight:700}}>Couldn't load stats</div><div style={{fontSize:"0.8rem",color:"#888",textAlign:"center"}}>The link may be invalid or stats haven't been published yet.</div></div>;
+  if(!snap) return <div style={{fontFamily:"'DM Sans',sans-serif",background:"#080f17",minHeight:"100vh",color:"#fff",display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column",gap:12}}><div style={{fontSize:"1.5rem"}}>⏳</div><div style={{fontSize:"0.875rem",color:"#888"}}>Loading team stats…</div></div>;
   return <ROView snap={snap}/>;
 }
 
-// ── Share sheet ───────────────────────────────────────────────────────────────
+// ── Share sheet with auto-push ────────────────────────────────────────────────
 function ShareSheet({ ranked, gameInfo, onClose }) {
   const baseUrl = window.location.origin + window.location.pathname;
   const [apiKey,  setApiKey]  = useState(()=>localStorage.getItem(JBIN_API)||"");
   const [binId,   setBinId]   = useState(()=>localStorage.getItem(JBIN_BIN)||"");
-  const [status,  setStatus]  = useState("idle"); // idle|busy|done|err
+  const [status,  setStatus]  = useState("idle");
   const [liveUrl, setLiveUrl] = useState(()=>{ const b=localStorage.getItem(JBIN_BIN); return b?`${baseUrl}?team=${b}`:""; });
   const [copied,  setCopied]  = useState(false);
+  const [lastPush,setLastPush]= useState(null);
+
+  const doPublish = async (key, id) => {
+    const payload = { gameInfo, stats:ranked, updatedAt:new Date().toISOString() };
+    let bid = id;
+    if (!bid) { bid = await jbCreate(key, payload); localStorage.setItem(JBIN_BIN,bid); setBinId(bid); }
+    else { await jbUpdate(key, bid, payload); }
+    localStorage.setItem(JBIN_API, key);
+    return bid;
+  };
 
   const publish = async () => {
     if (!apiKey.trim()) { setStatus("err"); return; }
     setStatus("busy");
     try {
-      const payload = { gameInfo, stats: ranked, updatedAt: new Date().toISOString() };
-      let id = binId;
-      if (!id) {
-        id = await jbCreate(apiKey.trim(), payload);
-        localStorage.setItem(JBIN_BIN, id); setBinId(id);
-      } else {
-        await jbUpdate(apiKey.trim(), id, payload);
-      }
-      localStorage.setItem(JBIN_API, apiKey.trim());
-      const url = `${baseUrl}?team=${id}`;
-      setLiveUrl(url); setStatus("done");
-    } catch(e) { setStatus("err"); }
+      const bid = await doPublish(apiKey.trim(), binId);
+      const url = `${baseUrl}?team=${bid}`;
+      setLiveUrl(url); setStatus("done"); setLastPush(new Date());
+    } catch { setStatus("err"); }
   };
 
-  const copy = () => { navigator.clipboard?.writeText(liveUrl).then(()=>{ setCopied(true); setTimeout(()=>setCopied(false),2000); }); };
+  const copy  = () => { navigator.clipboard?.writeText(liveUrl).then(()=>{ setCopied(true); setTimeout(()=>setCopied(false),2000); }); };
   const reset = () => { localStorage.removeItem(JBIN_BIN); setBinId(""); setLiveUrl(""); setStatus("idle"); };
+
+  // Auto-push every 60s if live link is active
+  useEffect(()=>{
+    if (!liveUrl || !apiKey) return;
+    const interval = setInterval(async ()=>{
+      try { await doPublish(apiKey, binId||localStorage.getItem(JBIN_BIN)||""); setLastPush(new Date()); } catch {}
+    }, 60000);
+    return ()=>clearInterval(interval);
+  }, [liveUrl, apiKey, binId, ranked, gameInfo]);
 
   return (
     <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.85)",zIndex:200,display:"flex",alignItems:"flex-end",justifyContent:"center"}} onClick={onClose}>
@@ -248,11 +255,11 @@ function ShareSheet({ ranked, gameInfo, onClose }) {
           <span style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:"1.4rem",letterSpacing:2}}>Share Live Stats</span>
           <button onClick={onClose} style={{background:"none",border:"none",color:"#aaa",fontSize:22,cursor:"pointer"}}>✕</button>
         </div>
-
         {liveUrl ? (
           <>
             <div style={{background:"#22c55e18",border:"1px solid #22c55e44",borderRadius:10,padding:"10px 14px",marginBottom:16,fontSize:"0.75rem",color:"#22c55e",lineHeight:1.6}}>
-              ✓ Live link active — parents bookmark this once and always see your latest stats.
+              ✓ Live — auto-updates every 60 seconds. Parents bookmark once, always see latest stats.
+              {lastPush&&<div style={{color:"#22c55e99",marginTop:2}}>Last pushed: {lastPush.toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"})}</div>}
             </div>
             <QRCode url={liveUrl}/>
             <div style={{display:"flex",gap:8,alignItems:"center",background:"#1a2636",borderRadius:10,padding:"10px 14px",marginBottom:12}}>
@@ -260,26 +267,23 @@ function ShareSheet({ ranked, gameInfo, onClose }) {
               <button onClick={copy} style={{background:copied?"#22c55e22":"#00e5ff22",border:`1px solid ${copied?"#22c55e":"#00e5ff"}55`,color:copied?"#22c55e":"#00e5ff",borderRadius:8,padding:"6px 14px",fontSize:"0.75rem",fontWeight:700,cursor:"pointer",fontFamily:"inherit",whiteSpace:"nowrap",flexShrink:0}}>{copied?"✓ Copied":"Copy Link"}</button>
             </div>
             {navigator.share&&<button onClick={()=>navigator.share({title:"FieldIQ Stats",url:liveUrl})} style={{width:"100%",background:"linear-gradient(135deg,#00e5ff,#0090a8)",border:"none",color:"#fff",borderRadius:10,padding:"13px",fontSize:"0.875rem",fontWeight:700,cursor:"pointer",fontFamily:"inherit",marginBottom:10}}>Share via…</button>}
-            <button onClick={publish} disabled={status==="busy"} style={{width:"100%",background:"#1a2636",border:"1px solid #2a3a4a",color:"#aaa",borderRadius:10,padding:"11px",fontSize:"0.8125rem",fontWeight:700,cursor:"pointer",fontFamily:"inherit",marginBottom:8}}>
-              {status==="busy"?"Publishing…":"↺ Push latest stats now"}
-            </button>
-            {status==="err"&&<div style={{fontSize:"0.7rem",color:"#ef4444",textAlign:"center",marginBottom:6}}>Failed — check your API key is still valid.</div>}
+            {status==="err"&&<div style={{fontSize:"0.7rem",color:"#ef4444",textAlign:"center",marginBottom:8}}>Auto-push failed. Check your API key.</div>}
             <button onClick={reset} style={{width:"100%",background:"transparent",border:"none",color:"#445",fontSize:"0.7rem",cursor:"pointer",fontFamily:"inherit"}}>Reset (generate a new link)</button>
           </>
         ) : (
           <>
             <p style={{fontSize:"0.75rem",color:"#888",marginBottom:16,lineHeight:1.6}}>
-              Publish to a <span style={{color:"#00e5ff"}}>permanent link</span> parents can bookmark. Every time you tap "Push latest stats" the link updates automatically.
+              Publish to a <span style={{color:"#00e5ff"}}>permanent link</span> that auto-updates every 60 seconds. Parents bookmark it once.
             </p>
             <div style={{background:"#1a2636",borderRadius:12,padding:"1rem",marginBottom:16}}>
               <div style={{fontWeight:700,fontSize:"0.875rem",marginBottom:8}}>One-time setup</div>
               <div style={{fontSize:"0.7rem",color:"#888",lineHeight:1.8,marginBottom:12}}>
-                1. Go to <span style={{color:"#00e5ff",fontWeight:700}}>jsonbin.io</span> and create a free account<br/>
-                2. Click <strong style={{color:"#fff"}}>API Keys</strong> in the sidebar<br/>
-                3. Click <strong style={{color:"#fff"}}>Create Access Key</strong>, name it FieldIQ<br/>
-                4. Copy the key (starts with $2b$) and paste below
+                1. Go to <span style={{color:"#00e5ff",fontWeight:700}}>jsonbin.io</span> → free account<br/>
+                2. Click <strong style={{color:"#fff"}}>API Keys</strong> → <strong style={{color:"#fff"}}>Create Access Key</strong><br/>
+                3. Copy the <strong style={{color:"#fff"}}>X-Master-Key</strong> (starts with $2b$)<br/>
+                4. Paste it below — saved to your device only
               </div>
-              <label style={{display:"block",fontSize:"0.7rem",letterSpacing:1,color:"#888",marginBottom:5,textTransform:"uppercase"}}>Your JSONBin API Key</label>
+              <label style={{display:"block",fontSize:"0.7rem",letterSpacing:1,color:"#888",marginBottom:5,textTransform:"uppercase"}}>X-Master-Key</label>
               <input value={apiKey} onChange={e=>setApiKey(e.target.value)} placeholder="$2b$10$..."
                 style={{width:"100%",background:"#0f1923",border:`1px solid ${status==="err"?"#ef4444":"#2a3a4a"}`,borderRadius:10,color:"#fff",padding:"11px 14px",fontSize:"0.8125rem",outline:"none",boxSizing:"border-box",fontFamily:"inherit"}}/>
               {status==="err"&&<div style={{fontSize:"0.7rem",color:"#ef4444",marginTop:6}}>Invalid key or network error. Double-check and try again.</div>}
@@ -320,9 +324,8 @@ function FInput({ label, ...props }) {
   );
 }
 function Btn({ children, onClick, variant="primary", full, style:s }) {
-  const bg = variant==="primary"?"linear-gradient(135deg,#00e5ff,#0090a8)":variant==="ghost"?"transparent":"#1e2d3d";
-  const border = variant==="ghost"?"1px solid #2a3a4a":"none";
-  return <button onClick={onClick} style={{background:bg,border,color:"#fff",borderRadius:10,padding:"13px 18px",fontSize:"0.875rem",fontWeight:700,cursor:"pointer",width:full?"100%":"auto",letterSpacing:.5,fontFamily:"inherit",...s}}>{children}</button>;
+  const bg=variant==="primary"?"linear-gradient(135deg,#00e5ff,#0090a8)":variant==="ghost"?"transparent":"#1e2d3d";
+  return <button onClick={onClick} style={{background:bg,border:variant==="ghost"?"1px solid #2a3a4a":"none",color:"#fff",borderRadius:10,padding:"13px 18px",fontSize:"0.875rem",fontWeight:700,cursor:"pointer",width:full?"100%":"auto",letterSpacing:.5,fontFamily:"inherit",...s}}>{children}</button>;
 }
 function FSelect({ label, value, onChange, options, placeholder }) {
   return (
@@ -371,17 +374,17 @@ function BarGraph({ label, pct, color, sublabel }) {
   );
 }
 function MiniStat({ value, label, color, plays, onOpen }) {
-  const t=plays.length>0;
+  const t=plays&&plays.length>0;
   return (
-    <div onClick={()=>t&&onOpen()} style={{display:"flex",flexDirection:"column",alignItems:"center",padding:"6px 10px",borderRadius:8,background:t?"#0a1420":"transparent",border:`1px solid ${t?color+"33":"transparent"}`,cursor:t?"pointer":"default",position:"relative",minWidth:52}}>
-      <span style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:"1.4rem",color,lineHeight:1,letterSpacing:.5}}>{value}</span>
-      <span style={{fontSize:"0.55rem",color:"#667",textTransform:"uppercase",letterSpacing:.8,marginTop:1}}>{label}</span>
+    <div onClick={()=>t&&onOpen()} style={{display:"flex",flexDirection:"column",alignItems:"center",padding:"6px 8px",borderRadius:8,background:t?"#0a1420":"transparent",border:`1px solid ${t?color+"33":"transparent"}`,cursor:t?"pointer":"default",position:"relative",minWidth:48}}>
+      <span style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:"1.3rem",color,lineHeight:1,letterSpacing:.5}}>{value}</span>
+      <span style={{fontSize:"0.5rem",color:"#667",textTransform:"uppercase",letterSpacing:.8,marginTop:1,textAlign:"center"}}>{label}</span>
       {t&&<span style={{position:"absolute",top:3,right:4,fontSize:"0.45rem",color:color+"99"}}>▼</span>}
     </div>
   );
 }
 function DrillDown({ playerName, statLabel, plays, allPlayers, color, onClose }) {
-  const icons={caught:"🙌",missed:"❌",flag:"🚩"};
+  const icons={caught:"🙌",missed:"❌",flag:"🚩",reception:"🏈",interception:"🛡"};
   const byGame={};
   plays.forEach(p=>{ const k=p.gameNumber||"__none__"; if(!byGame[k])byGame[k]={gameNumber:p.gameNumber,gameType:p.gameType,gameDate:p.gameDate,team:p.team,plays:[]}; byGame[k].plays.push(p); });
   const games=Object.values(byGame).sort((a,b)=>(+(a.gameNumber||99))-(+(b.gameNumber||99)));
@@ -394,13 +397,18 @@ function DrillDown({ playerName, statLabel, plays, allPlayers, color, onClose })
             <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:"1.05rem",color,letterSpacing:1}}>{g.gameNumber?`Game #${g.gameNumber}`:"No Game # Set"}</div>
             {g.gameType&&<Badge color="#888">{g.gameType}</Badge>}
             {g.gameDate&&<span style={{fontSize:"0.7rem",color:"#666"}}>{g.gameDate}</span>}
-            {g.team&&<span style={{fontSize:"0.7rem",color:"#666"}}>{g.team}</span>}
             <div style={{marginLeft:"auto",background:color+"22",color,borderRadius:20,padding:"2px 10px",fontSize:"0.7rem",fontWeight:700}}>{g.plays.length} play{g.plays.length!==1?"s":""}</div>
           </div>
           {g.plays.map((play,i)=>{ const qb=play.qbId?allPlayers.find(p=>p.id===play.qbId):null; return (
             <div key={play.id} style={{background:"#1a2636",borderRadius:9,padding:"9px 12px",marginBottom:5,display:"flex",alignItems:"center",gap:10,borderLeft:`3px solid ${color}66`}}>
               <span style={{fontSize:"0.9375rem"}}>{icons[play.result]||"•"}</span>
-              <div><div style={{fontWeight:600,fontSize:"0.8125rem"}}>Play #{i+1}</div>{qb&&<div style={{fontSize:"0.7rem",color:"#888"}}>QB: #{qb.number} {qb.name}</div>}</div>
+              <div>
+                <div style={{fontWeight:600,fontSize:"0.8125rem"}}>Play #{i+1}{play.touchdown?" 🏆 TD":""}</div>
+                <div style={{display:"flex",gap:8,marginTop:2}}>
+                  {qb&&<span style={{fontSize:"0.7rem",color:"#888"}}>QB: #{qb.number} {qb.name}</span>}
+                  {play.yards&&<span style={{fontSize:"0.7rem",color:"#a855f7",fontWeight:700}}>{play.yards.charAt(0).toUpperCase()+play.yards.slice(1)} yds</span>}
+                </div>
+              </div>
               <div style={{marginLeft:"auto",fontSize:"0.7rem",color:"#445"}}>{new Date(play.ts).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"})}</div>
             </div>
           ); })}
@@ -409,11 +417,13 @@ function DrillDown({ playerName, statLabel, plays, allPlayers, color, onClose })
     </Sheet>
   );
 }
-function PlayerCard({ p, rank, maxCatches, maxFlags, onDrill }) {
+function PlayerCard({ p, rank, maxCatches, maxFlags, maxAvgYards, onDrill }) {
   const [exp,setExp]=useState(false);
   const isQb=p.positions.includes("quarterback");
   const rc=rank===0?"#ffd700":rank===1?"#c0c0c0":rank===2?"#cd7f32":"#334";
-  const cp=Math.round(p.caught.length/maxCatches*100), fp=Math.round(p.flag.length/maxFlags*100);
+  const cp=Math.round(p.caught.length/maxCatches*100);
+  const fp=Math.round(p.flag.length/maxFlags*100);
+  const yp=maxAvgYards>0?Math.round(p.avgYards/maxAvgYards*100):0;
   const cr=(p.caught.length+p.missed.length)>0?Math.round(p.caught.length/(p.caught.length+p.missed.length)*100):0;
   return (
     <div style={{background:rank===0?"linear-gradient(135deg,#112030,#0e1a2a)":"#111d29",borderRadius:13,marginBottom:7,border:rank===0?"1px solid #00e5ff28":"1px solid #1a2636",overflow:"hidden"}}>
@@ -424,11 +434,13 @@ function PlayerCard({ p, rank, maxCatches, maxFlags, onDrill }) {
           <div style={{fontWeight:700,fontSize:"0.875rem",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{p.name}</div>
           <div style={{display:"flex",gap:3,marginTop:2}}>{p.positions.map(pos=><Badge key={pos} color={pos==="quarterback"?"#ff6b35":"#00e5ff"}>{pos==="quarterback"?"QB":"PL"}</Badge>)}</div>
         </div>
-        <div style={{display:"flex",gap:5,alignItems:"center",flexShrink:0}}>
-          <span style={{fontSize:"0.75rem",color:"#22c55e",fontWeight:700}}>{p.caught.length}C</span>
-          <span style={{fontSize:"0.65rem",color:"#334"}}>·</span>
-          <span style={{fontSize:"0.75rem",color:"#f59e0b",fontWeight:700}}>{p.flag.length}F</span>
-          {isQb&&p.thrown.length>0&&<><span style={{fontSize:"0.65rem",color:"#334"}}>·</span><span style={{fontSize:"0.75rem",color:"#ff6b35",fontWeight:700}}>{p.compPct}%</span></>}
+        <div style={{display:"flex",gap:4,alignItems:"center",flexShrink:0,flexWrap:"wrap",justifyContent:"flex-end",maxWidth:"45%"}}>
+          <span style={{fontSize:"0.7rem",color:"#22c55e",fontWeight:700}}>{p.caught.length}C</span>
+          <span style={{fontSize:"0.6rem",color:"#334"}}>·</span>
+          <span style={{fontSize:"0.7rem",color:"#f59e0b",fontWeight:700}}>{p.flag.length}F</span>
+          {p.tds>0&&<><span style={{fontSize:"0.6rem",color:"#334"}}>·</span><span style={{fontSize:"0.7rem",color:"#ffd700",fontWeight:700}}>{p.tds}TD</span></>}
+          {p.interceptions.length>0&&<><span style={{fontSize:"0.6rem",color:"#334"}}>·</span><span style={{fontSize:"0.7rem",color:"#3b82f6",fontWeight:700}}>{p.interceptions.length}INT</span></>}
+          {isQb&&p.thrown.length>0&&<><span style={{fontSize:"0.6rem",color:"#334"}}>·</span><span style={{fontSize:"0.7rem",color:"#ff6b35",fontWeight:700}}>{p.compPct}%</span></>}
         </div>
         <div style={{textAlign:"right",flexShrink:0,marginLeft:4}}>
           <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:"1.375rem",color:"#00e5ff",lineHeight:1}}>{p.score}</div>
@@ -439,17 +451,28 @@ function PlayerCard({ p, rank, maxCatches, maxFlags, onDrill }) {
       {exp&&(
         <div style={{padding:"0 12px 14px"}}>
           <div style={{height:1,background:"#1a2a3a",marginBottom:12}}/>
-          <div style={{display:"flex",gap:6,marginBottom:12}}>
-            <MiniStat value={p.caught.length} label="Catches"   color="#22c55e" plays={p.caught} onOpen={()=>onDrill(p.name,"Catches",p.caught,"#22c55e")}/>
-            <MiniStat value={p.missed.length} label="Missed"    color="#ef4444" plays={p.missed} onOpen={()=>onDrill(p.name,"Missed",p.missed,"#ef4444")}/>
-            <MiniStat value={p.flag.length}   label="Flag Pulls" color="#f59e0b" plays={p.flag}   onOpen={()=>onDrill(p.name,"Flag Pulls",p.flag,"#f59e0b")}/>
+          {/* stat boxes */}
+          <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:6,marginBottom:12}}>
+            <MiniStat value={p.caught.length}       label="Catches"    color="#22c55e" plays={p.caught}       onOpen={()=>onDrill(p.name,"Catches",p.caught,"#22c55e")}/>
+            <MiniStat value={p.missed.length}       label="Missed"     color="#ef4444" plays={p.missed}       onOpen={()=>onDrill(p.name,"Missed",p.missed,"#ef4444")}/>
+            <MiniStat value={p.flag.length}         label="Flags"      color="#f59e0b" plays={p.flag}         onOpen={()=>onDrill(p.name,"Flag Pulls",p.flag,"#f59e0b")}/>
+            <MiniStat value={p.receptions.length}   label="Rec"        color="#a855f7" plays={p.receptions}   onOpen={()=>onDrill(p.name,"Receptions",p.receptions,"#a855f7")}/>
+            <MiniStat value={p.tds}                 label="TDs"        color="#ffd700" plays={p.tdPlays}      onOpen={()=>onDrill(p.name,"Touchdowns",p.tdPlays,"#ffd700")}/>
+            <MiniStat value={p.interceptions.length}label="INTs"       color="#3b82f6" plays={p.interceptions}onOpen={()=>onDrill(p.name,"Interceptions",p.interceptions,"#3b82f6")}/>
+            {p.avgYards>0&&<div style={{gridColumn:"span 2",background:"#0a1420",borderRadius:8,padding:"6px 8px",textAlign:"center",border:"1px solid #a855f733"}}>
+              <span style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:"1.3rem",color:"#a855f7",lineHeight:1}}>{p.avgYards}</span>
+              <span style={{fontSize:"0.5rem",color:"#667",textTransform:"uppercase",letterSpacing:.8,display:"block",marginTop:1}}>Avg Yard Score</span>
+            </div>}
           </div>
+          {/* bars */}
           <div style={{background:"#0a1420",borderRadius:9,padding:"10px 10px 4px",marginBottom:isQb&&p.thrown.length>0?10:0}}>
-            <BarGraph label="Catches vs Best"   pct={cp} color="#22c55e" sublabel={`${p.caught.length} · ${cp}%`}/>
-            <BarGraph label="Flag Pulls vs Best" pct={fp} color="#f59e0b" sublabel={`${p.flag.length} · ${fp}%`}/>
+            <BarGraph label="Catches vs Best"    pct={cp} color="#22c55e" sublabel={`${p.caught.length} · ${cp}%`}/>
+            <BarGraph label="Flag Pulls vs Best"  pct={fp} color="#f59e0b" sublabel={`${p.flag.length} · ${fp}%`}/>
+            {maxAvgYards>0&&<BarGraph label="Avg Yard Score vs Best" pct={yp} color="#a855f7" sublabel={p.avgYards>0?`${p.avgYards} avg score`:"No yard plays"}/>}
             {isQb&&<BarGraph label="Pass Completion %" pct={p.compPct} color="#ff6b35" sublabel={p.thrown.length>0?`${p.comp.length}/${p.thrown.length} · ${p.compPct}%`:"No attempts"}/>}
             {(p.caught.length+p.missed.length)>0&&<BarGraph label="Catch Rate" pct={cr} color="#00e5ff" sublabel={`${cr}%`}/>}
           </div>
+          {/* QB section */}
           {isQb&&p.thrown.length>0&&(
             <div style={{marginTop:10}}>
               <div style={{fontSize:"0.55rem",color:"#ff6b3577",letterSpacing:2,textTransform:"uppercase",marginBottom:6}}>As Quarterback</div>
@@ -468,7 +491,7 @@ function PlayerCard({ p, rank, maxCatches, maxFlags, onDrill }) {
 function BackupSheet({ data, onImport, onClose, showToast }) {
   const ref=useRef();
   const doExport=()=>{
-    const blob=new Blob([JSON.stringify(data,null,2)],{type:"application/json"}), url=URL.createObjectURL(blob), a=document.createElement("a");
+    const blob=new Blob([JSON.stringify(data,null,2)],{type:"application/json"}),url=URL.createObjectURL(blob),a=document.createElement("a");
     a.href=url; a.download=`${(data.gameInfo?.team||"fieldiq").replace(/\s+/g,"-").toLowerCase()}-backup-${new Date().toISOString().slice(0,10)}.json`; a.click(); URL.revokeObjectURL(url);
     showToast("Backup downloaded! ✓");
   };
@@ -500,14 +523,11 @@ function EditPlayerSheet({ player, playCount, onSave, onDelete, onClose }) {
   const [confirm,setConfirm]=useState(false);
   const togglePos=pos=>setForm(f=>({...f,positions:f.positions.includes(pos)?f.positions.filter(x=>x!==pos):[...f.positions,pos]}));
   const canSave=form.number&&form.name&&form.positions.length>0;
-  if (confirm) return (
+  if(confirm) return (
     <Sheet title="Remove Player?" onClose={()=>setConfirm(false)} accent="#ef4444">
       <div style={{background:"#1a2636",borderRadius:12,padding:"1rem",marginBottom:20,display:"flex",gap:14,alignItems:"center"}}>
         <div style={{background:"#00e5ff18",color:"#00e5ff",fontFamily:"'Bebas Neue',sans-serif",fontSize:"1.375rem",borderRadius:8,width:44,height:44,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>{player.number}</div>
-        <div>
-          <div style={{fontWeight:700,fontSize:"1rem"}}>{player.name}</div>
-          <div style={{fontSize:"0.75rem",color:"#888",marginTop:2}}>{playCount>0?<span><span style={{color:"#ef4444"}}>{playCount} play{playCount!==1?"s":""}</span> will also be deleted</span>:"No plays recorded"}</div>
-        </div>
+        <div><div style={{fontWeight:700,fontSize:"1rem"}}>{player.name}</div><div style={{fontSize:"0.75rem",color:"#888",marginTop:2}}>{playCount>0?<span><span style={{color:"#ef4444"}}>{playCount} play{playCount!==1?"s":""}</span> will also be deleted</span>:"No plays recorded"}</div></div>
       </div>
       <div style={{fontSize:"0.8125rem",color:"#888",marginBottom:20,lineHeight:1.6}}>This permanently removes <strong style={{color:"#fff"}}>{player.name}</strong> and all their plays. Cannot be undone.</div>
       <div style={{display:"flex",gap:10}}>
@@ -520,15 +540,12 @@ function EditPlayerSheet({ player, playCount, onSave, onDelete, onClose }) {
     <Sheet title="Edit Player" onClose={onClose} accent="#00e5ff">
       <div style={{background:"#1a2636",borderRadius:12,padding:"12px 16px",marginBottom:20,display:"flex",alignItems:"center",gap:12}}>
         <div style={{background:"#00e5ff22",color:"#00e5ff",fontFamily:"'Bebas Neue',sans-serif",fontSize:"1.375rem",borderRadius:8,width:44,height:44,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>{form.number||player.number}</div>
-        <div>
-          <div style={{fontWeight:700,fontSize:"1rem"}}>{form.name||player.name}</div>
-          <div style={{fontSize:"0.7rem",color:"#888",marginTop:2}}>{playCount} play{playCount!==1?"s":""} recorded</div>
-        </div>
+        <div><div style={{fontWeight:700,fontSize:"1rem"}}>{form.name||player.name}</div><div style={{fontSize:"0.7rem",color:"#888",marginTop:2}}>{playCount} play{playCount!==1?"s":""} recorded</div></div>
       </div>
       <FInput label="Jersey Number" type="number" value={form.number} onChange={e=>setForm(f=>({...f,number:e.target.value}))} placeholder="e.g. 12"/>
       <FInput label="Player Name" value={form.name} onChange={e=>setForm(f=>({...f,name:e.target.value}))} placeholder="e.g. Alex Johnson"/>
       <div style={{marginBottom:20}}>
-        <label style={{display:"block",fontSize:"0.7rem",letterSpacing:1,color:"#888",marginBottom:8,textTransform:"uppercase"}}>Position (select all that apply)</label>
+        <label style={{display:"block",fontSize:"0.7rem",letterSpacing:1,color:"#888",marginBottom:8,textTransform:"uppercase"}}>Position</label>
         <div style={{display:"flex",gap:10}}>
           {["player","quarterback"].map(pos=>(
             <button key={pos} onClick={()=>togglePos(pos)} style={{flex:1,background:form.positions.includes(pos)?(pos==="quarterback"?"#ff6b3533":"#00e5ff22"):"#1a2636",border:`1.5px solid ${form.positions.includes(pos)?(pos==="quarterback"?"#ff6b35":"#00e5ff"):"#2a3a4a"}`,borderRadius:10,padding:"12px 8px",cursor:"pointer",color:"#fff",fontFamily:"inherit",fontWeight:700,fontSize:"0.8125rem"}}>{pos==="quarterback"?"🏈 QB":"🏃 Player"}</button>
@@ -551,29 +568,51 @@ function App() {
   const [showShare, setShowShare] = useState(false);
   const [editPlayer,setEditPlayer]= useState(null);
 
-  // Check URL params
-  const urlParams = useMemo(()=>new URLSearchParams(window.location.search),[]);
-  const snapParam = useMemo(()=>{ const s=urlParams.get("snap"); return s?decSnap(s):null; },[]);
-  const teamParam = useMemo(()=>urlParams.get("team"),[]);
+  // Input state
+  const [iPlayerId, setIPlayerId] = useState(null);
+  const [iResult,   setIResult]   = useState("");
+  const [iQbId,     setIQbId]     = useState("");
+  const [iYards,    setIYards]    = useState("");  // short|medium|long
+  const [iTD,       setITD]       = useState(null); // true|false
 
-  const [iPlayerId,setIPlayerId] = useState(null);
-  const [iResult,  setIResult]   = useState("");
-  const [iQbId,    setIQbId]     = useState("");
-  const [pForm,    setPForm]     = useState({number:"",name:"",positions:[]});
-  const [gForm,    setGForm]     = useState(data.gameInfo);
+  const [pForm, setPForm] = useState({number:"",name:"",positions:[]});
+  const [gForm, setGForm] = useState(data.gameInfo);
+
+  const urlParams = useMemo(()=>new URLSearchParams(window.location.search),[]);
+  const teamParam = useMemo(()=>urlParams.get("team"),[]);
 
   const update    = fn => setData(prev=>{ const next=fn(prev); save(next); return next; });
   const showToast = (msg,color="#00e5ff") => { setToast({msg,color}); setTimeout(()=>setToast(null),2500); };
 
+  const cfg      = resultCfg(iResult);
   const qbs      = data.players.filter(p=>p.positions.includes("quarterback"));
-  const needsQb  = iResult==="caught"||iResult==="missed";
-  const canSubmit= iPlayerId&&iResult&&(needsQb?iQbId:true);
+  const needsQb  = cfg.needsQb;
+  const needsYards = cfg.needsYards;
+  const needsTD  = cfg.needsTD;
+
+  // Determine if we can submit
+  const canSubmit = iPlayerId && iResult
+    && (needsQb ? iQbId : true)
+    && (needsYards ? iYards : true)
+    && (needsTD ? iTD !== null : true);
+
+  const resetInput = () => { setIPlayerId(null); setIResult(""); setIQbId(""); setIYards(""); setITD(null); };
 
   const submitPlay = () => {
     if (!canSubmit) return;
-    update(prev=>({...prev,plays:[...prev.plays,{id:uid(),ts:Date.now(),playerId:iPlayerId,result:iResult,qbId:needsQb?iQbId:null,gameNumber:prev.gameInfo.gameNumber,gameType:prev.gameInfo.type,gameDate:prev.gameInfo.date,team:prev.gameInfo.team}]}));
-    showToast("Play recorded! ✓"); setIPlayerId(null); setIResult(""); setIQbId("");
+    update(prev=>({...prev,plays:[...prev.plays,{
+      id:uid(), ts:Date.now(),
+      playerId:iPlayerId, result:iResult,
+      qbId: needsQb ? iQbId : null,
+      yards: needsYards ? iYards : null,
+      touchdown: needsTD ? iTD : false,
+      gameNumber:prev.gameInfo.gameNumber, gameType:prev.gameInfo.type,
+      gameDate:prev.gameInfo.date, team:prev.gameInfo.team
+    }]}));
+    showToast(iTD ? "🏆 TOUCHDOWN! ✓" : "Play recorded! ✓", iTD ? "#ffd700" : "#00e5ff");
+    resetInput();
   };
+
   const togglePos    = pos => setPForm(f=>({...f,positions:f.positions.includes(pos)?f.positions.filter(p=>p!==pos):[...f.positions,pos]}));
   const submitPlayer = () => {
     if (!pForm.number||!pForm.name||pForm.positions.length===0){showToast("Fill all fields!","#ff6b35");return;}
@@ -581,27 +620,44 @@ function App() {
     setPForm({number:"",name:"",positions:[]}); showToast("Player added!"); setModal(null);
   };
   const submitGame = () => { update(prev=>({...prev,gameInfo:gForm})); showToast("Game info saved!"); setModal(null); };
-
   const saveEditPlayer   = form => { update(prev=>({...prev,players:prev.players.map(p=>p.id===editPlayer.id?{...p,...form}:p)})); showToast("Player updated! ✓"); setEditPlayer(null); };
   const deleteEditPlayer = ()   => { update(prev=>({...prev,players:prev.players.filter(p=>p.id!==editPlayer.id),plays:prev.plays.filter(p=>p.playerId!==editPlayer.id)})); showToast(`${editPlayer.name} removed`,"#ef4444"); setEditPlayer(null); };
 
+  // ── Stats computation ─────────────────────────────────────────────────────
   const allStats = data.players.map(p=>{
-    const myPlays=data.plays.filter(pl=>pl.playerId===p.id);
-    const caught=myPlays.filter(pl=>pl.result==="caught"), missed=myPlays.filter(pl=>pl.result==="missed"), flag=myPlays.filter(pl=>pl.result==="flag");
-    const isQb=p.positions.includes("quarterback");
-    const thrown=data.plays.filter(pl=>pl.qbId===p.id&&(pl.result==="caught"||pl.result==="missed"));
-    const comp=thrown.filter(pl=>pl.result==="caught"), inc=thrown.filter(pl=>pl.result==="missed");
-    const compPct=thrown.length?Math.round(comp.length/thrown.length*100):0;
-    return {...p,myPlays,caught,missed,flag,isQb,thrown,comp,inc,compPct,score:caught.length*2+flag.length};
-  });
-  const maxCatches = Math.max(1,...allStats.map(p=>p.caught.length));
-  const maxFlags   = Math.max(1,...allStats.map(p=>p.flag.length));
-  const ranked     = [...allStats].sort((a,b)=>b.score-a.score);
+    const myPlays    = data.plays.filter(pl=>pl.playerId===p.id);
+    const caught     = myPlays.filter(pl=>pl.result==="caught");
+    const missed     = myPlays.filter(pl=>pl.result==="missed");
+    const flag       = myPlays.filter(pl=>pl.result==="flag");
+    const receptions = myPlays.filter(pl=>pl.result==="reception");
+    const interceptions = myPlays.filter(pl=>pl.result==="interception");
+    const tdPlays    = myPlays.filter(pl=>pl.touchdown===true);
+    const tds        = tdPlays.length;
+    // Yard score: short=1, medium=2, long=3 — average across all yard plays
+    const yardPlays  = myPlays.filter(pl=>pl.yards);
+    const totalYardScore = yardPlays.reduce((sum,pl)=>sum+yardScore(pl.yards),0);
+    const avgYards   = yardPlays.length ? +(totalYardScore/yardPlays.length).toFixed(1) : 0;
 
-  // Route: parent live view
+    const isQb   = p.positions.includes("quarterback");
+    const thrown = data.plays.filter(pl=>pl.qbId===p.id&&(pl.result==="caught"||pl.result==="missed"||pl.result==="reception"));
+    const comp   = thrown.filter(pl=>pl.result==="caught"||pl.result==="reception");
+    const inc    = thrown.filter(pl=>pl.result==="missed");
+    const compPct= thrown.length?Math.round(comp.length/thrown.length*100):0;
+
+    // Score: catches×2 + flags + receptions×2 + TDs×3 + interceptions×2
+    const score = caught.length*2 + flag.length + receptions.length*2 + tds*3 + interceptions.length*2;
+    return {...p,myPlays,caught,missed,flag,receptions,interceptions,tdPlays,tds,totalYards,avgYards,isQb,thrown,comp,inc,compPct,score};
+  });
+
+  const maxCatches  = Math.max(1,...allStats.map(p=>p.caught.length));
+  const maxFlags    = Math.max(1,...allStats.map(p=>p.flag.length));
+  const maxAvgYards = Math.max(1,...allStats.map(p=>p.avgYards));
+  const ranked      = [...allStats].sort((a,b)=>b.score-a.score);
+
   if (teamParam) return <LiveView binId={teamParam}/>;
-  // Route: legacy snapshot link
-  if (snapParam) return <ROView snap={snapParam}/>;
+
+  const recentClr = {caught:"#22c55e",missed:"#ef4444",flag:"#f59e0b",reception:"#a855f7",interception:"#3b82f6"};
+  const recentIco = {caught:"🙌",missed:"❌",flag:"🚩",reception:"🏈",interception:"🛡"};
 
   return (
     <div className="app-shell">
@@ -623,7 +679,6 @@ function App() {
         </div>
       </div>
 
-      {/* CONTENT */}
       <div style={{padding:"1rem"}} key={tab}>
 
         {/* ── SETUP ── */}
@@ -675,26 +730,72 @@ function App() {
               <>
                 <p style={{color:"#888",fontSize:"0.8125rem",marginBottom:18,lineHeight:1.5}}>Record each play as it happens.</p>
                 <div style={{background:"#0f1923",borderRadius:16,padding:16,border:"1px solid #1a2a3a"}}>
+
+                  {/* Step 1 */}
                   <div style={{fontSize:"0.7rem",color:"#00e5ff99",letterSpacing:2,textTransform:"uppercase",marginBottom:8}}>Step 1 — Who had the play?</div>
-                  <PlayerSearch players={data.players} value={iPlayerId} onChange={id=>{setIPlayerId(id);setIResult("");setIQbId("");}}/>
+                  <PlayerSearch players={data.players} value={iPlayerId} onChange={id=>{setIPlayerId(id);setIResult("");setIQbId("");setIYards("");setITD(null);}}/>
+
+                  {/* Step 2 */}
                   {iPlayerId&&(
                     <div>
                       <div style={{fontSize:"0.7rem",color:"#00e5ff99",letterSpacing:2,textTransform:"uppercase",marginBottom:8}}>Step 2 — What happened?</div>
-                      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:14}}>
-                        {[{value:"caught",label:"🙌 Caught",color:"#22c55e"},{value:"missed",label:"❌ Missed",color:"#ef4444"},{value:"flag",label:"🚩 Flag Pull",color:"#f59e0b"}].map(opt=>(
-                          <button key={opt.value} onClick={()=>{setIResult(opt.value);setIQbId("");}} style={{background:iResult===opt.value?opt.color+"33":"#1a2636",border:`1.5px solid ${iResult===opt.value?opt.color:"#2a3a4a"}`,borderRadius:10,padding:"12px 4px",cursor:"pointer",color:"#fff",fontSize:"0.8125rem",fontWeight:700,fontFamily:"inherit",transition:"all .15s"}}>{opt.label}</button>
+                      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:14}}>
+                        {RESULTS.map(opt=>(
+                          <button key={opt.value} onClick={()=>{setIResult(opt.value);setIQbId("");setIYards("");setITD(null);}}
+                            style={{background:iResult===opt.value?opt.color+"33":"#1a2636",border:`1.5px solid ${iResult===opt.value?opt.color:"#2a3a4a"}`,borderRadius:10,padding:"12px 8px",cursor:"pointer",color:"#fff",fontSize:"0.8125rem",fontWeight:700,fontFamily:"inherit",transition:"all .15s",textAlign:"left"}}>
+                            {opt.label}
+                          </button>
                         ))}
                       </div>
                     </div>
                   )}
+
+                  {/* Step 3: QB */}
                   {iPlayerId&&needsQb&&(
                     <div>
                       <div style={{fontSize:"0.7rem",color:"#ff6b3599",letterSpacing:2,textTransform:"uppercase",marginBottom:8}}>Step 3 — Which QB threw it?</div>
                       {qbs.length===0?<div style={{color:"#666",fontSize:"0.8125rem",marginBottom:14}}>No QBs set up yet!</div>:<FSelect value={iQbId} onChange={e=>setIQbId(e.target.value)} placeholder="Select QB…" options={qbs.map(q=>({value:q.id,label:`#${q.number} ${q.name}`}))}/>}
                     </div>
                   )}
-                  {canSubmit&&<Btn full onClick={submitPlay}>Record Play ✓</Btn>}
+
+                  {/* Step 4: Yards */}
+                  {iPlayerId&&needsYards&&(
+                    <div>
+                      <div style={{fontSize:"0.7rem",color:"#a855f799",letterSpacing:2,textTransform:"uppercase",marginBottom:8}}>
+                        {needsQb ? "Step 4" : "Step 3"} — How many yards?
+                      </div>
+                      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:14}}>
+                        {YARD_RANGES.map(yr=>(
+                          <button key={yr.value} onClick={()=>setIYards(yr.value)}
+                            style={{background:iYards===yr.value?"#a855f733":"#1a2636",border:`1.5px solid ${iYards===yr.value?"#a855f7":"#2a3a4a"}`,borderRadius:10,padding:"10px 4px",cursor:"pointer",color:"#fff",fontSize:"0.75rem",fontWeight:700,fontFamily:"inherit",transition:"all .15s",textAlign:"center",lineHeight:1.4}}>
+                            <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:"1.5rem",color:iYards===yr.value?"#a855f7":"#556",lineHeight:1}}>{yr.score}</div>
+                            <div style={{marginTop:2}}>{yr.label}</div>
+                            <div style={{fontSize:"0.6rem",color:"#888",marginTop:1}}>{yr.sub}</div>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Step 5: TD? (reception only) */}
+                  {iPlayerId&&needsTD&&(
+                    <div>
+                      <div style={{fontSize:"0.7rem",color:"#ffd70099",letterSpacing:2,textTransform:"uppercase",marginBottom:8}}>
+                        {needsQb ? (iYards ? "Step 5" : "Step 4") : (iYards ? "Step 4" : "Step 3")} — Was it a Touchdown?
+                      </div>
+                      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:14}}>
+                        <button onClick={()=>setITD(true)} style={{background:iTD===true?"#ffd70033":"#1a2636",border:`1.5px solid ${iTD===true?"#ffd700":"#2a3a4a"}`,borderRadius:10,padding:"12px",cursor:"pointer",color:"#fff",fontSize:"0.875rem",fontWeight:700,fontFamily:"inherit",transition:"all .15s"}}>🏆 Yes, TD!</button>
+                        <button onClick={()=>setITD(false)} style={{background:iTD===false?"#22c55e33":"#1a2636",border:`1.5px solid ${iTD===false?"#22c55e":"#2a3a4a"}`,borderRadius:10,padding:"12px",cursor:"pointer",color:"#fff",fontSize:"0.875rem",fontWeight:700,fontFamily:"inherit",transition:"all .15s"}}>✓ No TD</button>
+                      </div>
+                    </div>
+                  )}
+
+                  {canSubmit&&<Btn full onClick={submitPlay} style={{background:iTD?"linear-gradient(135deg,#ffd700,#f59e0b)":undefined}}>
+                    {iTD ? "🏆 Record Touchdown!" : "Record Play ✓"}
+                  </Btn>}
                 </div>
+
+                {/* Recent plays */}
                 {data.plays.length>0&&(
                   <div style={{marginTop:22}}>
                     <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
@@ -703,13 +804,17 @@ function App() {
                     </div>
                     {[...data.plays].reverse().slice(0,8).map(play=>{
                       const player=data.players.find(p=>p.id===play.playerId), qb=play.qbId?data.players.find(p=>p.id===play.qbId):null;
-                      const clr={caught:"#22c55e",missed:"#ef4444",flag:"#f59e0b"}, ico={caught:"🙌",missed:"❌",flag:"🚩"};
+                      const clr=recentClr[play.result]||"#888", ico=recentIco[play.result]||"•";
                       return(
-                        <div key={play.id} style={{background:"#1a2636",borderRadius:10,padding:"9px 13px",marginBottom:6,display:"flex",alignItems:"center",gap:10,borderLeft:`3px solid ${clr[play.result]}`}}>
-                          <span style={{fontSize:"1.0625rem"}}>{ico[play.result]}</span>
-                          <div><span style={{fontWeight:700,fontSize:"0.8125rem"}}>#{player?.number} {player?.name}</span>{qb&&<span style={{color:"#888",fontSize:"0.75rem"}}> · QB #{qb.number}</span>}</div>
+                        <div key={play.id} style={{background:"#1a2636",borderRadius:10,padding:"9px 13px",marginBottom:6,display:"flex",alignItems:"center",gap:10,borderLeft:`3px solid ${clr}`}}>
+                          <span style={{fontSize:"1.0625rem"}}>{ico}{play.touchdown?" 🏆":""}</span>
+                          <div>
+                            <span style={{fontWeight:700,fontSize:"0.8125rem"}}>#{player?.number} {player?.name}</span>
+                            {qb&&<span style={{color:"#888",fontSize:"0.75rem"}}> · QB #{qb.number}</span>}
+                            {play.yards&&<span style={{color:"#a855f7",fontSize:"0.7rem"}}> · {play.yards} yds</span>}
+                          </div>
                           <div style={{marginLeft:"auto",display:"flex",flexDirection:"column",alignItems:"flex-end",gap:2}}>
-                            <Badge color={clr[play.result]}>{play.result}</Badge>
+                            <Badge color={clr}>{play.result}</Badge>
                             {play.gameNumber&&<span style={{fontSize:"0.625rem",color:"#556"}}>Game #{play.gameNumber}</span>}
                           </div>
                         </div>
@@ -744,17 +849,19 @@ function App() {
                     <span style={{fontSize:"1rem"}}>↗</span> Share
                   </button>
                 </div>
-                <div style={{display:"flex",alignItems:"center",gap:6,fontSize:"0.7rem",color:"#556",marginBottom:12}}><span>👆</span><span>Tap a row to expand · tap a stat to see game details</span></div>
+                <div style={{fontSize:"0.65rem",color:"#445",marginBottom:14,lineHeight:1.6}}>
+                  Score = catches×2 + flags + receptions×2 + TDs×3 + INTs×2 &nbsp;·&nbsp; <span style={{color:"#556"}}>Tap a row to expand</span>
+                </div>
                 <div style={{display:"flex",alignItems:"center",gap:8,padding:"0 12px",marginBottom:6}}>
                   <div style={{width:18}}/><div style={{width:30}}/><div style={{flex:1}}/>
-                  <div style={{fontSize:"0.5625rem",color:"#445",letterSpacing:.8,textTransform:"uppercase",display:"flex",gap:14,marginRight:4}}>
-                    <span style={{color:"#22c55e55"}}>C</span><span style={{color:"#f59e0b55"}}>F</span><span style={{color:"#ff6b3555"}}>QB%</span>
+                  <div style={{fontSize:"0.5rem",color:"#445",letterSpacing:.8,textTransform:"uppercase",display:"flex",gap:10,marginRight:4}}>
+                    <span style={{color:"#22c55e55"}}>C</span><span style={{color:"#f59e0b55"}}>F</span><span style={{color:"#ffd70055"}}>TD</span><span style={{color:"#3b82f655"}}>INT</span>
                   </div>
-                  <div style={{fontSize:"0.5625rem",color:"#445",letterSpacing:.8,textTransform:"uppercase",width:38,textAlign:"right"}}>IQ</div>
+                  <div style={{fontSize:"0.5rem",color:"#445",letterSpacing:.8,textTransform:"uppercase",width:38,textAlign:"right"}}>IQ</div>
                   <div style={{width:14}}/>
                 </div>
                 {ranked.map((p,i)=>(
-                  <PlayerCard key={p.id} p={p} rank={i} maxCatches={maxCatches} maxFlags={maxFlags} onDrill={(name,label,plays,color)=>setDrill({playerName:name,statLabel:label,plays,color})}/>
+                  <PlayerCard key={p.id} p={p} rank={i} maxCatches={maxCatches} maxFlags={maxFlags} maxAvgYards={maxAvgYards} onDrill={(name,label,plays,color)=>setDrill({playerName:name,statLabel:label,plays,color})}/>
                 ))}
               </>
             )}
