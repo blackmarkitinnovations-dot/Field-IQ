@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Field IQ</title>
+  <title>FieldIQ</title>
   <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Sans:wght@400;600;700;900&display=swap" rel="stylesheet"/>
   <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
@@ -50,10 +50,9 @@ const yardScore = range => YARD_RANGES.find(r=>r.value===range)?.score || 0;
 
 // Play result config
 const RESULTS = [
-  { value:"caught",        label:"🙌 Caught",       color:"#22c55e", needsQb:true,  needsYards:false, needsTD:false },
+  { value:"caught",        label:"🙌 Caught",       color:"#22c55e", needsQb:true,  needsYards:true,  needsTD:true  },
   { value:"missed",        label:"❌ Missed",        color:"#ef4444", needsQb:true,  needsYards:false, needsTD:false },
   { value:"flag",          label:"🚩 Flag Pull",     color:"#f59e0b", needsQb:false, needsYards:false, needsTD:false },
-  { value:"reception",     label:"🏈 Reception",     color:"#a855f7", needsQb:true,  needsYards:true,  needsTD:true  },
   { value:"interception",  label:"🛡 Interception",  color:"#3b82f6", needsQb:true,  needsYards:true,  needsTD:true  },
 ];
 const resultCfg = v => RESULTS.find(r=>r.value===v) || {};
@@ -77,7 +76,7 @@ const jbRead = async id => {
 // ── Snapshot helpers ──────────────────────────────────────────────────────────
 const statsToSnap = (stats, gi, updatedAt) => ({
   g: gi,
-  p: stats.map(p=>({ n:p.name, num:p.number, pos:p.positions, c:p.caught.length, m:p.missed.length, f:p.flag.length, s:p.score, isQb:p.isQb, comp:p.comp.length, inc:p.inc.length, thrown:p.thrown.length, compPct:p.compPct, receptions:p.receptions.length, tds:p.tds, interceptions:p.interceptions.length, totalYards:p.totalYardScore, avgYards:p.avgYards })),
+  p: stats.map(p=>({ n:p.name, num:p.number, pos:p.positions, c:p.caught.length, m:p.missed.length, f:p.flag.length, s:p.score, isQb:p.isQb, comp:p.comp.length, inc:p.inc.length, thrown:p.thrown.length, compPct:p.compPct, tds:p.tds, interceptions:p.interceptions.length, avgYards:p.avgYards })),
   ts: updatedAt ? new Date(updatedAt).getTime() : Date.now()
 });
 
@@ -131,7 +130,7 @@ function ROView({ snap }) {
       </div>
       <div style={{padding:"1rem"}}>
         <div style={{fontSize:"0.7rem",color:"#888",letterSpacing:2,textTransform:"uppercase",marginBottom:10}}>🏆 Player Rankings</div>
-        <div style={{fontSize:"0.65rem",color:"#445",marginBottom:14}}>Score = catches×2 + flag pulls + receptions×2 + TDs×3</div>
+        <div style={{fontSize:"0.65rem",color:"#445",marginBottom:14}}>Score = catches×2 + flag pulls + TDs×3 + INTs×2</div>
         {ranked.map((p,i)=>{
           const cp=Math.round(p.c/maxC*100), fp=Math.round(p.f/maxF*100), yp=maxY>0?Math.round((p.avgYards||0)/maxY*100):0;
           const cr=(p.c+p.m)>0?Math.round(p.c/(p.c+p.m)*100):0;
@@ -158,7 +157,7 @@ function ROView({ snap }) {
                 </div>
               </div>
               <div style={{display:"flex",gap:6,marginBottom:10,flexWrap:"wrap"}}>
-                {[{v:p.c,l:"Catches",col:"#22c55e"},{v:p.m,l:"Missed",col:"#ef4444"},{v:p.f,l:"Flag Pulls",col:"#f59e0b"},{v:p.receptions,l:"Receptions",col:"#a855f7"},{v:p.tds,l:"TDs",col:"#ffd700"},{v:p.interceptions,l:"INTs",col:"#3b82f6"}].map(s=>(
+                {[{v:p.c,l:"Catches",col:"#22c55e"},{v:p.m,l:"Missed",col:"#ef4444"},{v:p.f,l:"Flag Pulls",col:"#f59e0b"},{v:p.tds,l:"TDs",col:"#ffd700"},{v:p.interceptions,l:"INTs",col:"#3b82f6"}].map(s=>(
                   <div key={s.l} style={{flex:"1 1 30%",background:"#0a1420",borderRadius:8,padding:"7px 4px",textAlign:"center",border:`1px solid ${s.col}33`,minWidth:50}}>
                     <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:"1.3rem",color:s.col,lineHeight:1}}>{s.v}</div>
                     <div style={{fontSize:"0.5rem",color:"#667",textTransform:"uppercase",letterSpacing:.8,marginTop:1}}>{s.l}</div>
@@ -376,15 +375,15 @@ function BarGraph({ label, pct, color, sublabel }) {
 function MiniStat({ value, label, color, plays, onOpen }) {
   const t=plays&&plays.length>0;
   return (
-    <div onClick={()=>t&&onOpen()} style={{display:"flex",flexDirection:"column",alignItems:"center",padding:"6px 8px",borderRadius:8,background:t?"#0a1420":"transparent",border:`1px solid ${t?color+"33":"transparent"}`,cursor:t?"pointer":"default",position:"relative",minWidth:48}}>
-      <span style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:"1.3rem",color,lineHeight:1,letterSpacing:.5}}>{value}</span>
+    <div onClick={()=>t&&onOpen()} style={{display:"flex",flexDirection:"column",alignItems:"center",padding:"6px 8px",borderRadius:8,background:"#0a1420",border:`1px solid ${t?color+"33":color+"18"}`,cursor:t?"pointer":"default",position:"relative",minWidth:48}}>
+      <span style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:"1.3rem",color:t?color:color+"66",lineHeight:1,letterSpacing:.5}}>{value}</span>
       <span style={{fontSize:"0.5rem",color:"#667",textTransform:"uppercase",letterSpacing:.8,marginTop:1,textAlign:"center"}}>{label}</span>
       {t&&<span style={{position:"absolute",top:3,right:4,fontSize:"0.45rem",color:color+"99"}}>▼</span>}
     </div>
   );
 }
 function DrillDown({ playerName, statLabel, plays, allPlayers, color, onClose }) {
-  const icons={caught:"🙌",missed:"❌",flag:"🚩",reception:"🏈",interception:"🛡"};
+  const icons={caught:"🙌",missed:"❌",flag:"🚩",interception:"🛡"};
   const byGame={};
   plays.forEach(p=>{ const k=p.gameNumber||"__none__"; if(!byGame[k])byGame[k]={gameNumber:p.gameNumber,gameType:p.gameType,gameDate:p.gameDate,team:p.team,plays:[]}; byGame[k].plays.push(p); });
   const games=Object.values(byGame).sort((a,b)=>(+(a.gameNumber||99))-(+(b.gameNumber||99)));
@@ -456,10 +455,9 @@ function PlayerCard({ p, rank, maxCatches, maxFlags, maxAvgYards, onDrill }) {
             <MiniStat value={p.caught.length}       label="Catches"    color="#22c55e" plays={p.caught}       onOpen={()=>onDrill(p.name,"Catches",p.caught,"#22c55e")}/>
             <MiniStat value={p.missed.length}       label="Missed"     color="#ef4444" plays={p.missed}       onOpen={()=>onDrill(p.name,"Missed",p.missed,"#ef4444")}/>
             <MiniStat value={p.flag.length}         label="Flags"      color="#f59e0b" plays={p.flag}         onOpen={()=>onDrill(p.name,"Flag Pulls",p.flag,"#f59e0b")}/>
-            <MiniStat value={p.receptions.length}   label="Rec"        color="#a855f7" plays={p.receptions}   onOpen={()=>onDrill(p.name,"Receptions",p.receptions,"#a855f7")}/>
             <MiniStat value={p.tds}                 label="TDs"        color="#ffd700" plays={p.tdPlays}      onOpen={()=>onDrill(p.name,"Touchdowns",p.tdPlays,"#ffd700")}/>
             <MiniStat value={p.interceptions.length}label="INTs"       color="#3b82f6" plays={p.interceptions}onOpen={()=>onDrill(p.name,"Interceptions",p.interceptions,"#3b82f6")}/>
-            {p.avgYards>0&&<div style={{gridColumn:"span 2",background:"#0a1420",borderRadius:8,padding:"6px 8px",textAlign:"center",border:"1px solid #a855f733"}}>
+            {p.avgYards>0&&<div style={{gridColumn:"span 3",background:"#0a1420",borderRadius:8,padding:"6px 8px",textAlign:"center",border:"1px solid #a855f733"}}>
               <span style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:"1.3rem",color:"#a855f7",lineHeight:1}}>{p.avgYards}</span>
               <span style={{fontSize:"0.5rem",color:"#667",textTransform:"uppercase",letterSpacing:.8,display:"block",marginTop:1}}>Avg Yard Score</span>
             </div>}
@@ -629,24 +627,23 @@ function App() {
     const caught     = myPlays.filter(pl=>pl.result==="caught");
     const missed     = myPlays.filter(pl=>pl.result==="missed");
     const flag       = myPlays.filter(pl=>pl.result==="flag");
-    const receptions = myPlays.filter(pl=>pl.result==="reception");
     const interceptions = myPlays.filter(pl=>pl.result==="interception");
     const tdPlays    = myPlays.filter(pl=>pl.touchdown===true);
     const tds        = tdPlays.length;
-    // Yard score: short=1, medium=2, long=3 — average across all yard plays
+    // Yard score: short=1, medium=2, long=3 — average across caught + interception plays
     const yardPlays  = myPlays.filter(pl=>pl.yards);
     const totalYardScore = yardPlays.reduce((sum,pl)=>sum+yardScore(pl.yards),0);
     const avgYards   = yardPlays.length ? +(totalYardScore/yardPlays.length).toFixed(1) : 0;
 
     const isQb   = p.positions.includes("quarterback");
-    const thrown = data.plays.filter(pl=>pl.qbId===p.id&&(pl.result==="caught"||pl.result==="missed"||pl.result==="reception"));
-    const comp   = thrown.filter(pl=>pl.result==="caught"||pl.result==="reception");
+    const thrown = data.plays.filter(pl=>pl.qbId===p.id&&(pl.result==="caught"||pl.result==="missed"));
+    const comp   = thrown.filter(pl=>pl.result==="caught");
     const inc    = thrown.filter(pl=>pl.result==="missed");
     const compPct= thrown.length?Math.round(comp.length/thrown.length*100):0;
 
-    // Score: catches×2 + flags + receptions×2 + TDs×3 + interceptions×2
-    const score = caught.length*2 + flag.length + receptions.length*2 + tds*3 + interceptions.length*2;
-    return {...p,myPlays,caught,missed,flag,receptions,interceptions,tdPlays,tds,totalYards,avgYards,isQb,thrown,comp,inc,compPct,score};
+    // Score: catches×2 + flags + TDs×3 + interceptions×2
+    const score = caught.length*2 + flag.length + tds*3 + interceptions.length*2;
+    return {...p,myPlays,caught,missed,flag,interceptions,tdPlays,tds,totalYardScore,avgYards,isQb,thrown,comp,inc,compPct,score};
   });
 
   const maxCatches  = Math.max(1,...allStats.map(p=>p.caught.length));
@@ -656,8 +653,8 @@ function App() {
 
   if (teamParam) return <LiveView binId={teamParam}/>;
 
-  const recentClr = {caught:"#22c55e",missed:"#ef4444",flag:"#f59e0b",reception:"#a855f7",interception:"#3b82f6"};
-  const recentIco = {caught:"🙌",missed:"❌",flag:"🚩",reception:"🏈",interception:"🛡"};
+  const recentClr = {caught:"#22c55e",missed:"#ef4444",flag:"#f59e0b",interception:"#3b82f6"};
+  const recentIco = {caught:"🙌",missed:"❌",flag:"🚩",interception:"🛡"};
 
   return (
     <div className="app-shell">
@@ -777,7 +774,7 @@ function App() {
                     </div>
                   )}
 
-                  {/* Step 5: TD? (reception only) */}
+                  {/* Step 5: TD? */}
                   {iPlayerId&&needsTD&&(
                     <div>
                       <div style={{fontSize:"0.7rem",color:"#ffd70099",letterSpacing:2,textTransform:"uppercase",marginBottom:8}}>
@@ -790,8 +787,8 @@ function App() {
                     </div>
                   )}
 
-                  {canSubmit&&<Btn full onClick={submitPlay} style={{background:iTD?"linear-gradient(135deg,#ffd700,#f59e0b)":undefined}}>
-                    {iTD ? "🏆 Record Touchdown!" : "Record Play ✓"}
+                  {canSubmit&&<Btn full onClick={submitPlay} style={{background:iTD===true?"linear-gradient(135deg,#ffd700,#f59e0b)":"linear-gradient(135deg,#00e5ff,#0090a8)"}}>
+                    {iTD===true ? "🏆 Record Touchdown!" : "Record Play ✓"}
                   </Btn>}
                 </div>
 
@@ -850,7 +847,7 @@ function App() {
                   </button>
                 </div>
                 <div style={{fontSize:"0.65rem",color:"#445",marginBottom:14,lineHeight:1.6}}>
-                  Score = catches×2 + flags + receptions×2 + TDs×3 + INTs×2 &nbsp;·&nbsp; <span style={{color:"#556"}}>Tap a row to expand</span>
+                  Score = catches×2 + flags + TDs×3 + INTs×2 &nbsp;·&nbsp; <span style={{color:"#556"}}>Tap a row to expand</span>
                 </div>
                 <div style={{display:"flex",alignItems:"center",gap:8,padding:"0 12px",marginBottom:6}}>
                   <div style={{width:18}}/><div style={{width:30}}/><div style={{flex:1}}/>
